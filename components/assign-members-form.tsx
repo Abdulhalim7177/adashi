@@ -35,6 +35,7 @@ export function AssignMembersForm({ schemeId }: { schemeId: string }) {
   const [members, setMembers] = useState<Member[]>([]);
   const [selectedMembers, setSelectedMembers] = useState<Set<string>>(new Set());
   const [contributedMemberIds, setContributedMemberIds] = useState<Set<string>>(new Set());
+  const [memberJoinDates, setMemberJoinDates] = useState<Map<string, string>>(new Map());
   const [searchQuery, setSearchQuery] = useState('');
   const [loading, setLoading] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -47,18 +48,25 @@ export function AssignMembersForm({ schemeId }: { schemeId: string }) {
       const supabase = createClient();
       
       try {
-        // Fetch all members (non-admin users)
-        const { data: profiles, error: profilesError } = await supabase
+        // Fetch all profiles and filter in JS to be safe with Enums
+        const { data: allProfiles, error: profilesError } = await supabase
           .from('profiles')
-          .select('id, full_name, phone_number, home_address')
-          .neq('role', 'admin'); // Exclude admins
+          .select('id, full_name, phone_number, home_address, role');
         
         if (profilesError) throw profilesError;
         
-        // Fetch existing assignments for this scheme
+        // Filter out admins manually
+        const profiles = (allProfiles || []).filter(p => p.role !== 'admin');
+        
+        if (profiles.length === 0 && (allProfiles || []).length > 0) {
+          console.warn("Only admins found in database");
+        } else if ((allProfiles || []).length === 0) {
+          console.warn("No profiles found at all. Did you run the seed script?");
+          setError("No users found in database. Please register some members or run the seed script.");
+        }
         const { data: existingAssignments, error: assignmentsError } = await supabase
           .from('scheme_members')
-          .select('user_id')
+          .select('user_id, joined_at')
           .eq('scheme_id', schemeId);
         
         if (assignmentsError) throw assignmentsError;
@@ -76,9 +84,17 @@ export function AssignMembersForm({ schemeId }: { schemeId: string }) {
         const hasContributedIds = new Set(transactions?.map(t => t.user_id) || []);
         setContributedMemberIds(hasContributedIds);
         
-        // Mark existing assignments as selected
+        // Mark existing assignments as selected and store their join dates
         const existingIds = new Set(existingAssignments.map(a => a.user_id));
         setSelectedMembers(existingIds);
+
+        const initialJoinDates = new Map<string, string>();
+        existingAssignments.forEach(a => {
+          if (a.joined_at) {
+            initialJoinDates.set(a.user_id, new Date(a.joined_at).toISOString().split('T')[0]);
+          }
+        });
+        setMemberJoinDates(initialJoinDates);
         
         const membersWithContribInfo = (profiles || []).map(m => ({
           ...m,
@@ -126,7 +142,7 @@ export function AssignMembersForm({ schemeId }: { schemeId: string }) {
       // 1. Get current assignments from DB to know who to delete
       const { data: currentDbAssignments } = await supabase
         .from('scheme_members')
-        .select('user_id')
+        .select('user_id, joined_at')
         .eq('scheme_id', schemeId);
 
       const currentDbIds = new Set(currentDbAssignments?.map(a => a.user_id) || []);
@@ -139,6 +155,17 @@ export function AssignMembersForm({ schemeId }: { schemeId: string }) {
 
       // 3. Identify users to ADD (those in selectedMembers but NOT in DB)
       const toAdd = Array.from(selectedMembers).filter(id => !currentDbIds.has(id));
+      
+      // 4. Identify users to UPDATE (those in selectedMembers AND in DB but date changed)
+      const toUpdate = Array.from(selectedMembers).filter(id => {
+        if (!currentDbIds.has(id)) return false;
+        
+        const currentDbAssignment = currentDbAssignments?.find(a => a.user_id === id);
+        const dbDate = currentDbAssignment?.joined_at ? new Date(currentDbAssignment.joined_at).toISOString().split('T')[0] : '';
+        const formDate = memberJoinDates.get(id) || '';
+        
+        return formDate !== dbDate;
+      });
 
       // Perform deletions
       if (toRemove.length > 0) {
@@ -153,11 +180,15 @@ export function AssignMembersForm({ schemeId }: { schemeId: string }) {
 
       // Perform insertions
       if (toAdd.length > 0) {
-        const insertData = toAdd.map(id => ({
-          scheme_id: schemeId,
-          user_id: id,
-          status: 'active' as const
-        }));
+        const insertData = toAdd.map(id => {
+          const joinDate = memberJoinDates.get(id);
+          return {
+            scheme_id: schemeId,
+            user_id: id,
+            status: 'active' as const,
+            ...(joinDate ? { joined_at: new Date(joinDate).toISOString() } : {}),
+          };
+        });
 
         const { error: insertError } = await supabase
           .from('scheme_members')
@@ -165,9 +196,26 @@ export function AssignMembersForm({ schemeId }: { schemeId: string }) {
         
         if (insertError) throw insertError;
       }
+
+      // Perform updates
+      if (toUpdate.length > 0) {
+        for (const id of toUpdate) {
+          const joinDate = memberJoinDates.get(id);
+          const { error: updateError } = await supabase
+            .from('scheme_members')
+            .update({ 
+              joined_at: joinDate ? new Date(joinDate).toISOString() : null 
+            })
+            .eq('scheme_id', schemeId)
+            .eq('user_id', id);
+          
+          if (updateError) throw updateError;
+        }
+      }
       
       setSuccess(`Assignments updated successfully!`);
       setTimeout(() => {
+        router.refresh();
         router.push(`/dashboard/admin/schemes/${schemeId}`);
       }, 1500);
     } catch (err) {
@@ -178,10 +226,13 @@ export function AssignMembersForm({ schemeId }: { schemeId: string }) {
     }
   };
 
-  const filteredMembers = members.filter(member => 
-    member.full_name?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    member.phone_number?.includes(searchQuery)
-  );
+  const filteredMembers = members.filter(member => {
+    const fullName = (member.full_name || '').toLowerCase();
+    const phoneNumber = member.phone_number || '';
+    const query = (searchQuery || '').toLowerCase();
+    
+    return fullName.includes(query) || phoneNumber.includes(query);
+  });
 
   if (loading) {
     return (
@@ -279,6 +330,27 @@ export function AssignMembersForm({ schemeId }: { schemeId: string }) {
                           </div>
                         </div>
                         
+                        {isSelected && (
+                          <div className="flex flex-col items-end gap-1">
+                            <span className="text-[9px] font-black uppercase text-muted-foreground">Start Date</span>
+                            <Input
+                              type="date"
+                              className="w-[150px] h-8 text-xs font-bold"
+                              placeholder="Join date"
+                              value={memberJoinDates.get(member.id) || ''}
+                              onChange={(e) => {
+                                const newMap = new Map(memberJoinDates);
+                                if (e.target.value) {
+                                  newMap.set(member.id, e.target.value);
+                                } else {
+                                  newMap.delete(member.id);
+                                }
+                                setMemberJoinDates(newMap);
+                              }}
+                            />
+                          </div>
+                        )}
+
                         {hasContrib && (
                           <TooltipProvider>
                             <Tooltip>

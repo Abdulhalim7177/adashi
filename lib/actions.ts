@@ -99,6 +99,7 @@ export async function recordContribution(data: {
   revalidatePath(`/dashboard/admin/schemes/${data.schemeId}/member/${data.userId}`);
   revalidatePath(`/dashboard/admin/schemes/${data.schemeId}/collect`);
   revalidatePath(`/dashboard/member`);
+  revalidatePath(`/dashboard/member/schemes/${data.schemeId}`);
   // Also revalidate the main schemes page to update the quick collect buttons
   revalidatePath('/dashboard/admin/schemes');
   // Revalidate dashboard pages that might show contribution status
@@ -400,6 +401,7 @@ export async function processPayout(data: {
   revalidatePath(`/dashboard/admin/schemes/${data.schemeId}`);
   revalidatePath(`/dashboard/admin/schemes/${data.schemeId}/member/${data.userId}`);
   revalidatePath(`/dashboard/member`);
+  revalidatePath(`/dashboard/member/schemes/${data.schemeId}`);
 
   return {
     success: true,
@@ -409,6 +411,35 @@ export async function processPayout(data: {
       processedAt: new Date().toISOString()
     }
   };
+}
+
+export async function updateMemberJoinDate(data: {
+  userId: string;
+  schemeId: string;
+  joinedAt: string;
+}) {
+  const supabase = await createClient();
+
+  const { data: { user: adminUser } } = await supabase.auth.getUser();
+  if (!adminUser) throw new Error("Unauthorized");
+
+  const { error } = await supabase
+    .from('scheme_members')
+    .update({ joined_at: new Date(data.joinedAt).toISOString() })
+    .eq('user_id', data.userId)
+    .eq('scheme_id', data.schemeId);
+
+  if (error) {
+    console.error("Error updating join date:", error);
+    return { error: error.message };
+  }
+
+  revalidatePath(`/dashboard/admin/schemes/${data.schemeId}`);
+  revalidatePath(`/dashboard/admin/schemes/${data.schemeId}/member/${data.userId}`);
+  revalidatePath(`/dashboard/admin/schemes/${data.schemeId}/manage-status`);
+  revalidatePath(`/dashboard/member`);
+  revalidatePath(`/dashboard/member/schemes/${data.schemeId}`);
+  return { success: true };
 }
 
 export async function updateMember(userId: string, formData: {

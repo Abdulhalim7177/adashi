@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { createClient } from '@/lib/supabase/client';
-import { Button } from '@/components/ui/button';
+import { updateMemberJoinDate } from '@/lib/actions';
 import {
   Card,
   CardContent,
@@ -17,13 +17,16 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
+import { Input } from '@/components/ui/input';
 import { useRouter } from 'next/navigation';
+import { toast } from 'sonner';
 
 interface Member {
   id: string;
   full_name: string;
   phone_number: string;
   status: 'active' | 'completed' | 'defaulted';
+  joined_at: string;
 }
 
 export function ManageMemberStatusForm({ schemeId }: { schemeId: string }) {
@@ -36,22 +39,21 @@ export function ManageMemberStatusForm({ schemeId }: { schemeId: string }) {
   useEffect(() => {
     const fetchMembers = async () => {
       const supabase = createClient();
-      
+
       try {
-        // Fetch members assigned to this scheme with their current status
         const { data, error } = await supabase
           .from('scheme_members')
           .select(`
             id,
             status,
+            joined_at,
             profiles (id, full_name, phone_number)
           `)
           .eq('scheme_id', schemeId)
-          .order('status', { ascending: false }); // Active first
-        
+          .order('status', { ascending: false });
+
         if (error) throw error;
-        
-        // Transform the data to match our interface
+
         const transformedMembers = (data || []).map(item => {
           const profile = Array.isArray(item.profiles) ? item.profiles[0] : item.profiles;
           return {
@@ -59,9 +61,10 @@ export function ManageMemberStatusForm({ schemeId }: { schemeId: string }) {
             full_name: profile?.full_name || 'Unknown',
             phone_number: profile?.phone_number || 'N/A',
             status: item.status as 'active' | 'completed' | 'defaulted',
+            joined_at: item.joined_at || '',
           };
         });
-        
+
         setMembers(transformedMembers);
       } catch (err) {
         console.error('Error fetching members:', err);
@@ -76,28 +79,46 @@ export function ManageMemberStatusForm({ schemeId }: { schemeId: string }) {
 
   const handleStatusChange = async (memberId: string, newStatus: 'active' | 'completed' | 'defaulted') => {
     const supabase = createClient();
-    
+
     try {
-      // Update the member's status in the scheme_members table
       const { error } = await supabase
         .from('scheme_members')
         .update({ status: newStatus })
         .eq('scheme_id', schemeId)
         .eq('user_id', memberId);
-      
+
       if (error) throw error;
-      
-      // Update local state
-      setMembers(prev => prev.map(member => 
+
+      setMembers(prev => prev.map(member =>
         member.id === memberId ? { ...member, status: newStatus } : member
       ));
-      
+
       setSuccess('Status updated successfully!');
       setTimeout(() => setSuccess(null), 3000);
     } catch (err) {
       console.error('Error updating status:', err);
       setError(err instanceof Error ? err.message : 'Failed to update status');
     }
+  };
+
+  const handleJoinDateChange = async (memberId: string, newDate: string) => {
+    if (!newDate) return;
+
+    const result = await updateMemberJoinDate({
+      userId: memberId,
+      schemeId,
+      joinedAt: newDate,
+    });
+
+    if (result.error) {
+      toast.error(result.error);
+      return;
+    }
+
+    setMembers(prev => prev.map(member =>
+      member.id === memberId ? { ...member, joined_at: new Date(newDate).toISOString() } : member
+    ));
+    toast.success('Join date updated successfully');
   };
 
   if (loading) {
@@ -114,14 +135,14 @@ export function ManageMemberStatusForm({ schemeId }: { schemeId: string }) {
         <CardHeader>
           <CardTitle>Manage Member Statuses</CardTitle>
           <CardDescription>
-            Update member statuses in this scheme (Active, Completed, Defaulted)
+            Update member statuses and contribution start dates. Adjust the &quot;Joined At&quot; date for members migrating from the manual system.
           </CardDescription>
         </CardHeader>
         <CardContent>
           <div className="space-y-4">
             {error && <p className="text-sm text-red-500">{error}</p>}
             {success && <p className="text-sm text-green-500">{success}</p>}
-            
+
             {members.length === 0 ? (
               <p className="text-center py-4 text-muted-foreground">No members assigned to this scheme</p>
             ) : (
@@ -131,8 +152,8 @@ export function ManageMemberStatusForm({ schemeId }: { schemeId: string }) {
                     <tr className="border-b">
                       <th className="py-2 text-left">Name</th>
                       <th className="py-2 text-left">Phone</th>
-                      <th className="py-2 text-left">Current Status</th>
-                      <th className="py-2 text-left">Update Status</th>
+                      <th className="py-2 text-left">Joined At</th>
+                      <th className="py-2 text-left">Status</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -141,20 +162,17 @@ export function ManageMemberStatusForm({ schemeId }: { schemeId: string }) {
                         <td className="py-3">{member.full_name}</td>
                         <td className="py-3">{member.phone_number}</td>
                         <td className="py-3">
-                          <span className={`px-2 py-1 rounded-full text-xs ${
-                            member.status === 'active' 
-                              ? 'bg-green-100 text-green-800' 
-                              : member.status === 'completed' 
-                                ? 'bg-blue-100 text-blue-800' 
-                                : 'bg-red-100 text-red-800'
-                          }`}>
-                            {member.status.charAt(0).toUpperCase() + member.status.slice(1)}
-                          </span>
+                          <Input
+                            type="date"
+                            className="w-[160px]"
+                            defaultValue={member.joined_at ? new Date(member.joined_at).toISOString().split('T')[0] : ''}
+                            onChange={(e) => handleJoinDateChange(member.id, e.target.value)}
+                          />
                         </td>
                         <td className="py-3">
-                          <Select 
-                            value={member.status} 
-                            onValueChange={(value: 'active' | 'completed' | 'defaulted') => 
+                          <Select
+                            value={member.status}
+                            onValueChange={(value: 'active' | 'completed' | 'defaulted') =>
                               handleStatusChange(member.id, value)
                             }
                           >

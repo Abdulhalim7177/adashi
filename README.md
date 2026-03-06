@@ -49,3 +49,31 @@ A modern dashboard application built with Next.js and Supabase.
 ## Deployment
 
 This application can be deployed to any platform that supports Next.js applications, such as Vercel, Netlify, or your own server.
+
+
+
+  Issues Found (Priority Order)
+
+  Security (Critical):
+  1. Admin role check is broken — email?.includes('admin') grants admin to any email containing "admin" (e.g.
+  myadminwork@gmail.com)
+  2. RLS removed from transactions — any authenticated user can read/write any transaction
+  3. No auth on server actions — recordContribution doesn't verify the caller is an admin
+  4. Default passwords = phone numbers — extremely weak credentials
+  5. No middleware-based route protection — relies on per-page checks, easy to miss routes
+
+  Scalability:
+  6. Balances computed on-the-fly from all transactions — will degrade with volume
+  7. No pagination — admin page fetches ALL transactions; scheme detail caps at 300
+  8. Transaction detachment on payout (scheme_id = null) breaks historical reporting
+
+  Code Quality:
+  9. Flat component structure — 30+ components in one folder, no feature grouping
+  10. Duplicate cn utility defined locally in admin page instead of importing
+  11. .env.example appears to contain a real Supabase key
+  12. No input validation on server action parameters
+
+  Missing from PRD:
+  - No offline/PWA support
+  - No SMS/WhatsApp notifications
+  - No OTP authentication for members
